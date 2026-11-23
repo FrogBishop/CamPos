@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+release/
+refs/
+.vs/
+*.user
+*.suo
+src/CamPos.App/app.png

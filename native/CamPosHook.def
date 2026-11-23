@@ -1,0 +1,4 @@
+LIBRARY CamPosHook.dll
+
+EXPORTS
+WndProc
