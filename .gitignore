@@ -6,4 +6,10 @@ refs/
 .vs/
 *.user
 *.suo
+__pycache__/
 src/CamPos.App/app.png
+
+# Generated area data and Minecraft exports
+/exports/
+/docs/area-title-boundaries-[0-9]*.json
+/docs/area-title-crossings-[0-9]*.md

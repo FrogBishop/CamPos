@@ -282,3 +282,15 @@ docs/                     界面截图
 ## License
 
 GNU General Public License v3.0（GPLv3）。Copyright (C) 2026 CamPos contributors。见 [LICENSE](LICENSE)。
+
+## 一键导出 Minecraft 地名
+
+Windows 安装 Python 3.8 或更高版本后，在文件资源管理器中双击仓库根目录的 [export-area-hints.cmd](export-area-hints.cmd)。脚本每次联网确认 `main` 当前的提交，在同一提交下下载区域表、中文地名和场景边界，并按 Git 文件哈希复用本地缓存。[数据来源](https://github.com/DimbreathBot/AnimeGameData)
+
+完成后打开 `exports/area-hints-genshin-<版本与提交>/`。其中 `area-hints.zip` 是完整导入包，`all/scene-3/overworld.json` 是提瓦特全部区域，`tips-only/scene-3/overworld.json` 仅包含 `showTips=true` 的区域。其他场景各有独立文件。转换使用 `MC (X, Y, Z) = 原神 (-Z, Y, -X)`，比例为 1:1。区域 ID、缺少边界的条目和名称映射保存在包内的 `reference/areas-index.json`。
+
+在命令行中可以固定上游提交以复现历史版本，也可以用 `--output` 指定输出目录。
+
+```powershell
+.\export-area-hints.cmd --ref d54f6f0d423ded9d055bb740a3e5f3aa8f2667f1
+```
