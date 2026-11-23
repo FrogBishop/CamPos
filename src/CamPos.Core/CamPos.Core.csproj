@@ -5,4 +5,7 @@
     <AssemblyName>CamPos.Core</AssemblyName>
     <RootNamespace>CamPos.Core</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CamPos.CoordinateChecks" />
+  </ItemGroup>
 </Project>

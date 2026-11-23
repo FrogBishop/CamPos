@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 
 /* Avoid TinyCC's x87 inline math intrinsics; these are imported from msvcrt. */
@@ -8,7 +9,7 @@ extern double fabs(double);
 #define IS_FINITE(x) ((x) == (x) && fabs(x) < 1.0e30)
 
 #define CAMPOS_MAGIC 0x43414D50u
-#define CAMPOS_VERSION 3u
+#define CAMPOS_VERSION 4u
 #define FOV_OFFSET_OS 0x1467230UL
 #define FOV_OFFSET_CN 0x1466230UL
 
@@ -32,7 +33,7 @@ typedef struct CamPosState {
     unsigned int Magic;
     unsigned int Version;
     unsigned int Valid;
-    unsigned int Reserved;
+    volatile LONG Sequence;
     unsigned int Tick;
     float Px, Py, Pz;
     float Fx, Fy, Fz;
@@ -44,8 +45,12 @@ typedef struct CamPosState {
     float PlayerX, PlayerY, PlayerZ;
     unsigned int AbsoluteValid;
     float OriginX, OriginZ;
+    unsigned int PlayerTick, OriginTick, OriginGeneration;
 } CamPosState;
 #pragma pack(pop)
+C_ASSERT(sizeof(CamPosState) == 116);
+C_ASSERT(offsetof(CamPosState, Sequence) == 12);
+C_ASSERT(offsetof(CamPosState, PlayerTick) == 104);
 
 typedef struct Vec3 { float X, Y, Z; } Vec3;
 
@@ -74,6 +79,8 @@ static GetIntFn g_get_childcount;
 static GetChildFn g_get_child;
 static GetBoolFn g_get_active;
 
+/* Protect the coordinates, their validity, and their sample times as one cache. */
+static SRWLOCK g_coordinates_lock = SRWLOCK_INIT;
 static volatile LONG g_player_updating;
 static volatile LONG g_player_valid;
 static volatile unsigned int g_player_tick;
@@ -82,6 +89,7 @@ static volatile float g_player_x, g_player_y, g_player_z;
 static volatile LONG g_origin_valid;
 static volatile unsigned int g_origin_tick;
 static volatile float g_origin_x, g_origin_z;
+static unsigned int g_origin_generation;
 
 static int readable(const void* p, SIZE_T n)
 {
@@ -137,29 +145,39 @@ static void* find_child(void* parent, const char* name)
 
 static void set_player(float x, float y, float z)
 {
+    AcquireSRWLockExclusive(&g_coordinates_lock);
     g_player_x = x;
     g_player_y = y;
     g_player_z = z;
     g_player_tick = GetTickCount();
     g_player_valid = 1;
+    ReleaseSRWLockExclusive(&g_coordinates_lock);
 }
 
 static void clear_player(void)
 {
+    AcquireSRWLockExclusive(&g_coordinates_lock);
     g_player_valid = 0;
+    ReleaseSRWLockExclusive(&g_coordinates_lock);
 }
 
 static void set_origin(float x, float z)
 {
+    AcquireSRWLockExclusive(&g_coordinates_lock);
+    if (!g_origin_valid || x != g_origin_x || z != g_origin_z)
+        ++g_origin_generation;
     g_origin_x = x;
     g_origin_z = z;
     g_origin_tick = GetTickCount();
     g_origin_valid = 1;
+    ReleaseSRWLockExclusive(&g_coordinates_lock);
 }
 
 static void clear_origin(void)
 {
+    AcquireSRWLockExclusive(&g_coordinates_lock);
     g_origin_valid = 0;
+    ReleaseSRWLockExclusive(&g_coordinates_lock);
 }
 
 static void update_origin(void* camera)
@@ -236,7 +254,7 @@ done:
 
 static BOOL create_shared_state(void)
 {
-    const wchar_t* names[] = { L"Global\\CamPosState_v3", L"Local\\CamPosState_v3" };
+    const wchar_t* names[] = { L"Global\\CamPosState_v4", L"Local\\CamPosState_v4" };
     for (int i = 0; i < 2; ++i) {
         g_mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(CamPosState), names[i]);
         if (g_mapping) {
@@ -254,23 +272,19 @@ static BOOL create_shared_state(void)
     return FALSE;
 }
 
-static void write_state(void)
+static void fill_state(CamPosState* state)
 {
-    if (!g_state) return;
     void* instance = (void*)g_instance;
     if (!instance || !readable(instance, 0x20)) {
-        g_state->Valid = 0;
-        g_state->PlayerValid = 0;
         return;
     }
     void* native = *(void**)((BYTE*)instance + 0x10);
     if (!native || !readable((BYTE*)native + 0x8d8, 0x1000)) {
-        g_state->Valid = 0;
-        g_state->PlayerValid = 0;
         return;
     }
 
     float* mat = (float*)((BYTE*)native + 0x1680);
+    unsigned int sample_tick = GetTickCount();
     float px = mat[12], py = mat[13], pz = mat[14];
     float rx = mat[0], ry = mat[1], rz = mat[2];
     float ux = mat[4], uy = mat[5], uz = mat[6];
@@ -290,50 +304,43 @@ static void write_state(void)
         fov < 5.0f || fov > 150.0f ||
         (fabs(px) < 0.01f && fabs(py) < 0.01f && fabs(pz) < 0.01f) ||
         fabs(px) > 200000.0f || fabs(pz) > 200000.0f || py < -10000.0f || py > 100000.0f) {
-        g_state->Valid = 0;
-        g_state->PlayerValid = 0;
         return;
     }
 
-    g_state->Tick = GetTickCount();
-    g_state->Px = px; g_state->Py = py; g_state->Pz = pz;
-    g_state->Fx = fx; g_state->Fy = fy; g_state->Fz = fz;
-    g_state->Ux = ux; g_state->Uy = uy; g_state->Uz = uz;
-    g_state->Rx = rx; g_state->Ry = ry; g_state->Rz = rz;
-    g_state->Fov = fov;
-    g_state->Aspect = aspect;
-    g_state->Magic = CAMPOS_MAGIC;
-    g_state->Version = CAMPOS_VERSION;
-    g_state->Valid = 1;
+    state->Tick = sample_tick;
+    state->Px = px; state->Py = py; state->Pz = pz;
+    state->Fx = fx; state->Fy = fy; state->Fz = fz;
+    state->Ux = ux; state->Uy = uy; state->Uz = uz;
+    state->Rx = rx; state->Ry = ry; state->Rz = rz;
+    state->Fov = fov;
+    state->Aspect = aspect;
+    state->Valid = 1;
 
-    unsigned int origin_tick = g_origin_tick;
-    LONG origin_valid = g_origin_valid;
-    if (origin_valid && (GetTickCount() - origin_tick) <= 1500) {
-        g_state->AbsoluteValid = 1;
-        g_state->OriginX = g_origin_x;
-        g_state->OriginZ = g_origin_z;
-    } else {
-        g_state->AbsoluteValid = 0;
+    AcquireSRWLockShared(&g_coordinates_lock);
+    state->PlayerTick = g_player_tick;
+    state->OriginTick = g_origin_tick;
+    state->OriginGeneration = g_origin_generation;
+    unsigned int origin_age = sample_tick - g_origin_tick;
+    if (g_origin_valid && origin_age <= 1500) {
+        state->AbsoluteValid = 1;
+        state->OriginX = g_origin_x;
+        state->OriginZ = g_origin_z;
     }
 
-    unsigned int player_tick = g_player_tick;
-    LONG player_valid = g_player_valid;
-    if (player_valid && (GetTickCount() - player_tick) <= 1000) {
+    unsigned int player_age = sample_tick - g_player_tick;
+    if (g_player_valid && player_age <= 1000) {
         float ax = g_player_x, ay = g_player_y, az = g_player_z;
         float dx = ax - px, dy = ay - py, dz = az - pz;
         float dist2 = dx * dx + dy * dy + dz * dz;
         if (IS_FINITE(ax) && IS_FINITE(ay) && IS_FINITE(az) &&
             dist2 < 10000.0f && (fabs(ax) + fabs(ay) + fabs(az)) > 0.05f) {
-            g_state->PlayerX = ax;
-            g_state->PlayerY = ay;
-            g_state->PlayerZ = az;
-            g_state->PlayerValid = 1;
-        } else {
-            g_state->PlayerValid = 0;
+            state->PlayerX = ax;
+            state->PlayerY = ay;
+            state->PlayerZ = az;
+            state->PlayerValid = 1;
         }
-    } else {
-        g_state->PlayerValid = 0;
     }
+    ReleaseSRWLockShared(&g_coordinates_lock);
 }
 
 static int is_main_camera(void* instance)
@@ -390,7 +397,17 @@ static DWORD WINAPI state_thread(LPVOID param)
     (void)param;
     while (1) {
         Sleep(33);
-        write_state();
+        if (g_state) {
+            CamPosState next = {0};
+            next.Magic = CAMPOS_MAGIC;
+            next.Version = CAMPOS_VERSION;
+            fill_state(&next);
+            /* Keep the sequence odd only while copying. Never copy over the sequence itself. */
+            InterlockedIncrement(&g_state->Sequence);
+            memcpy(g_state, &next, offsetof(CamPosState, Sequence));
+            memcpy(&g_state->Tick, &next.Tick, sizeof(next) - offsetof(CamPosState, Tick));
+            InterlockedIncrement(&g_state->Sequence);
+        }
     }
     return 0;
 }

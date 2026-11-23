@@ -11,8 +11,8 @@ internal sealed class MainForm : Form
     private OverlayForm? _overlay;
     private CameraFrame? _lastFrame;
     private CameraReadResult _latest;
+    private readonly object _updateGate = new();
     private int _uiQueued;
-    private long _lastUiTicks;
     private DateTime _lastSuccessUtc = DateTime.MinValue;
     private bool _startedSource;
     private bool _closing;
@@ -487,6 +487,7 @@ internal sealed class MainForm : Form
         try
         {
             _monitor.SetSource(null);
+            ResetSourceDisplay();
             var source = new InjectedCameraSource();
             _monitor.SetSource(source);
             _processLabel.ForeColor = Ui.Muted;
@@ -513,6 +514,7 @@ internal sealed class MainForm : Form
     private void StartDemo()
     {
         _monitor.SetSource(new DemoCameraSource());
+        ResetSourceDisplay();
         _sourceLabel.Text = "演示数据 · 不读取游戏";
         _addressLabel.Text = "这是 UI 演示，不是原神数据。";
         _hintLabel.Text = "演示模式用于检查相机、角色坐标、悬浮窗和字体布局。";
@@ -525,14 +527,12 @@ internal sealed class MainForm : Form
     private void StopSource()
     {
         _monitor.SetSource(null);
+        ResetSourceDisplay();
         SetStatus("已停止", Ui.Muted);
         _sourceLabel.Text = "已停止读取";
         _addressLabel.Text = "—";
         _processLabel.Text = "未连接共享内存。";
-        _lastFrame = null;
-        _charX.Text = _charY.Text = _charZ.Text = "—";
-        if (_overlay is not null)
-            _overlay.SetError("已停止。");
+        _overlay?.SetError("已停止。");
         AppendLog("已停止读取。");
     }
 
@@ -578,15 +578,17 @@ internal sealed class MainForm : Form
 
     private void OnMonitorUpdated(CameraReadResult result)
     {
-        _latest = result;
         if (_closing) return;
+        lock (_updateGate) _latest = result;
         if (Interlocked.Exchange(ref _uiQueued, 1) != 0) return;
         try
         {
             BeginInvoke(() =>
             {
                 Interlocked.Exchange(ref _uiQueued, 0);
-                HandleReadResult(_latest);
+                CameraReadResult latest;
+                lock (_updateGate) latest = _latest;
+                HandleReadResult(latest);
             });
         }
         catch (InvalidOperationException)
@@ -597,16 +599,13 @@ internal sealed class MainForm : Form
 
     private void HandleReadResult(CameraReadResult result)
     {
-        if (_closing) return;
-        var now = Environment.TickCount64;
-        if (now - _lastUiTicks < 30) return;
-        _lastUiTicks = now;
+        if (_closing || result.SourceGeneration != _monitor.SourceGeneration) return;
 
         if (result.Success && result.Frame is not null)
         {
             var f = result.Frame;
             _lastFrame = f;
-            _lastSuccessUtc = DateTime.UtcNow;
+            _lastSuccessUtc = f.Timestamp.UtcDateTime;
             _xValue.Text = f.Position.X.ToString("0.00");
             _yValue.Text = f.Position.Y.ToString("0.00");
             _zValue.Text = f.Position.Z.ToString("0.00");
@@ -635,23 +634,36 @@ internal sealed class MainForm : Form
             _addressLabel.Text = f.PrimaryAddress == 0
                 ? $"注入共享内存  ·  {f.Timestamp:HH:mm:ss.fff}"
                 : $"相机结构 0x{f.PrimaryAddress:X}  ·  {f.Timestamp:HH:mm:ss.fff}";
+            if (f.AbsoluteTiming.Length != 0) _addressLabel.Text += "  ·  " + f.AbsoluteTiming;
             _overlay?.SetFrame(f, stale: false);
             SetStatus(f.Source.StartsWith("演示", StringComparison.Ordinal) ? "演示" : "实时", Ui.Accent);
         }
         else
         {
             _addressLabel.Text = result.Error;
-            if (_lastFrame is null)
-            {
-                SetStatus("无数据", Ui.Warn);
-                _overlay?.SetError(result.Error);
-            }
-            else
-            {
-                SetStatus("数据中断", Ui.Warn);
-                _overlay?.SetFrame(_lastFrame, stale: true);
-            }
+            SetStatus(_lastSuccessUtc == DateTime.MinValue ? "无数据" : "数据中断", Ui.Warn);
+            ClearReadout(result.Error);
         }
+    }
+
+    private void ResetSourceDisplay()
+    {
+        _startedSource = false;
+        _lastSuccessUtc = DateTime.MinValue;
+        _ageLabel.Text = string.Empty;
+        ClearReadout("等待读数。");
+    }
+
+    private void ClearReadout(string message)
+    {
+        _lastFrame = null;
+        _xValue.Text = _yValue.Text = _zValue.Text = "—";
+        _absXValue.Text = _absYValue.Text = _absZValue.Text = "ABS  —";
+        _charX.Text = _charY.Text = _charZ.Text = "—";
+        _charAbsValue.Text = "ABS  X —   Z —";
+        _yawValue.Text = _pitchValue.Text = _rollValue.Text = _fovValue.Text = "—";
+        _forwardValue.Text = "FWD  —";
+        _overlay?.SetError(message);
     }
 
     private void SetStatus(string text, Color color)

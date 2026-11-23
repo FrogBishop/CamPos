@@ -2,10 +2,10 @@
 
 CamPos 是一个 Windows x64 的《原神》进程内遥测工具。它通过注入 `CamPosHook.dll` 读取：
 
-- 当前主相机的相对坐标和绝对坐标；
+- 当前主相机的场景坐标和相对于场景参考物的水平坐标（界面标为 `ABS`）
 - 相机 Yaw / Pitch / Roll、朝向单位向量；
 - 相机垂直 FOV；
-- **当前场上角色的脚底相对坐标和绝对坐标**。
+- **当前场上角色的场景坐标和 ABS 坐标**。
 
 界面提供置顶悬浮窗和点击穿透。
 
@@ -20,12 +20,12 @@ CamPos 是一个 Windows x64 的《原神》进程内遥测工具。它通过注
 ## 功能
 
 - 相机相对坐标 X / Y / Z（Unity 场景坐标）
-- 相机绝对坐标 X / Z（自动还原 world shift；Y 不变）
+- 相机 ABS 坐标（X / Z 减去场景参考物的位置，Y 沿用场景高度）
 - Yaw / Pitch / Roll（度）
 - 相机朝向单位向量
 - 垂直 FOV（度）
-- 角色相对坐标 X / Y / Z（脚底，当前场上角色）
-- 角色绝对坐标 X / Z（自动还原 world shift；Y 不变）
+- 角色相对坐标 X / Y / Z（当前活动角色的 Transform 原点）
+- 角色 ABS 坐标（X / Z 与相机使用同一参考物）
 - 置顶悬浮窗：拖动、透明度、点击穿透；通过按钮或右键菜单操作，无全局快捷键
 - 演示模式：不连接游戏也能检查 UI 和布局
 - 30 Hz 共享内存传输，界面只读共享内存
@@ -148,7 +148,7 @@ CamPosHook.dll 在游戏主线程恢复前 hook：
 1. 从主相机 Component 取得 Transform；
 2. 从相机 Transform 的父节点（/EntityRoot）找到名为 AvatarRoot 的子节点；
 3. 遍历 AvatarRoot 的子节点，取 activeInHierarchy == true 的那个（当前场上角色）；
-4. 调用 Unity 的 Transform.get_position，得到角色脚底世界坐标。
+4. 调用 Unity 的 `Transform.get_position`，读取该角色节点在当前场景中的世界坐标。
 
 7.2.0 的 Unity 访问器实现入口（native 函数，不是托管 thunk）：
 
@@ -165,39 +165,51 @@ CamPosHook.dll 在游戏主线程恢复前 hook：
 
 国服这张表的地址统一比国际服低 0x1000；Camera.set_fieldOfView 则低 0x10000。这些偏移只对应 7.2.0；游戏更新后需要重新定位。
 
-角色坐标与相机坐标使用同一套 Unity 场景坐标，但 Genshin 在传送/加载时会对世界做平移（world shift），所以 Transform 里的 X/Z 是相对坐标。CamPosHook 同时从 EntityRoot / OtherRoot 下的 world shift 锚点读取平移量，按：
+### ABS 坐标与传送落点
+
+相机和角色的普通 X / Y / Z 都是当前 Unity 场景的世界坐标。CamPos 取 `OtherRoot/New Game Object` 的场景位置作为水平坐标的参考。界面所称的“绝对坐标”（ABS）对相机和角色使用同一公式。
 
 ~~~text
-绝对 X = 相对 X - 锚点 X
-绝对 Z = 相对 Z - 锚点 Z
-绝对 Y = 相对 Y
+ABS X = 场景 X - 参考物 X
+ABS Y = 场景 Y
+ABS Z = 场景 Z - 参考物 Z
 ~~~
 
-还原绝对坐标。该锚点与场景传送点数据中的绝对坐标可以逐点对上；进入大世界后主界面和悬浮窗会同时显示相对值和 ABS 值。若当前场景没有可用的锚点（例如部分副本/加载界面），ABS 显示为 —。
+相机或角色与参考物一起平移时，共有的水平位移会在相减时抵消。要使 ABS 与地图的 X / Z 一致，参考物在该地图坐标系中的 X / Z 须为 `(0, 0)`。收到有效的相机帧但缺少参考物时，主界面的 ABS 显示为 `—`，悬浮窗隐藏对应的 ABS 行。
+
+场景数据中的 `pos` 表示传送点实体的摆放位置，`tranPos` 表示为角色配置的传送到达位置。下面两次实测都在角色落地站稳、尚未走动时，记录**角色栏**的 ABS X / Z，并与对应点位的 `tranPos` 比较。[场景 3 点位数据](https://raw.githubusercontent.com/DimbreathBot/AnimeGameData/d54f6f0d423ded9d055bb740a3e5f3aa8f2667f1/BinOutput/Scene/Point/scene3_point.json)
+
+| 七天神像（场景 3 点位 ID） | 神像 `pos` (X, Z) | 配置到达位置 `tranPos` (X, Z) | 实测角色 ABS (X, Z) |
+|---|---|---|---|
+| 风起地（4） | (1928.381, -1265.917) | (1934.3658, -1266.3422) | (1934.37, -1266.34) |
+| 星落湖（7） | (2566.115, -1323.474) | (2564.5361, -1329.8206) | (2564.54, -1329.82) |
+
+这两处的角色场景 X / Z 均显示为 `(0.00, 0.00)`，ABS X / Z 均与 `tranPos` 四舍五入至两位小数后的值一致。
+
+`tranPos.y` 是配置的到达高度。据实测者说明，传送时角色先出现在地面上方，展开风之翼后下降。这样能给加载较慢的设备留出载入地形的时间，降低角色卡入地面的风险。截图中的 ABS Y 是采样时角色站稳后的场景高度。风起地实测 `195.57`，比配置的 `196.139` 低约 `0.57`。星落湖实测 `213.57`，比配置的 `215.3869` 低约 `1.82`。
+
+普通坐标和朝向随最新帧刷新。ABS 使用已获得后续参考物读数确认的历史帧，界面上的“ABS 延迟”是这两帧的时间差。参考物变化或失效时，查看器会清除待确认的 ABS。v4 使用参考物的实际采样时间。仓库现有的预编译 DLL 使用 v3，只有整帧时间，查看器按参考物最长 1.5 秒的缓存期进行确认。稳定读取时 v3 的 ABS 通常落后约 1.5 秒。首次连接或参考物变化后，角色 ABS 还需等旧角色样本最多 1 秒的缓存期过去。
 
 ### 共享内存
 
-CamPosHook.dll 创建：
-
-- 首选 Global\CamPosState_v3
-- 失败时退回 Local\CamPosState_v3
-
-每 33 ms 写入以下状态（Pack=4，共 104 字节）：
+原生源码每约 33 ms 向 `Global\CamPosState_v4` 发布一帧，无法创建时使用 `Local\CamPosState_v4`。v4 状态按 4 字节对齐，共 116 字节。
 
 ~~~text
-uint Magic; uint Version; uint Valid; uint Reserved; uint Tick;
+uint Magic; uint Version; uint Valid; uint Sequence; uint Tick;
 float Px, Py, Pz;          // 相机世界坐标
 float Fx, Fy, Fz;          // 相机前向
 float Ux, Uy, Uz;          // 相机上向
 float Rx, Ry, Rz;          // 相机右向
 float Fov; float Aspect;
 uint PlayerValid;
-float PlayerX, PlayerY, PlayerZ;  // 角色脚底相对坐标
-uint AbsoluteValid;
-float OriginX, OriginZ;           // world shift 锚点；绝对 = 相对 - Origin
+float PlayerX, PlayerY, PlayerZ;  // 活动角色 Transform 的场景坐标
+uint AbsoluteValid;               // 有近期可用的场景参考物读数
+float OriginX, OriginZ;           // 场景参考物的 X/Z，供界面计算 ABS
+uint PlayerTick, OriginTick;       // 角色与参考物各自的采样时刻（毫秒）
+uint OriginGeneration;           // 参考物坐标改变或失效后重新取得时递增
 ~~~
 
-CamPos.exe 只读这个共享内存。
+v4 写入快照时将 `Sequence` 更新为奇数，完成后再更新为偶数。查看器在复制前后核对同一偶数序号。查看器也兼容原有的 `Global\CamPosState_v3` 和 `Local\CamPosState_v3`（104 字节），通过重复读取筛除可观测到的半帧。v3 没有发布序号和参考物代次，短暂且未被轮询捕捉的变化无法从这份数据识别。
 
 ## 构建
 

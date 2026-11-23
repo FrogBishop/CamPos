@@ -9,8 +9,8 @@ It:
 - captures the IL2CPP `Camera` instance and reads the native Camera at `+0x10`, camera-to-world matrix at `+0x1680`, projection at `+0x8d8`;
 - only accepts cameras whose Transform name starts with `MainCamera`, so UI cameras do not overwrite the state;
 - finds `/EntityRoot/AvatarRoot` from the camera Transform, selects the active child, and calls Unity's `Transform.get_position` for the current character;
-- reads the world-shift anchor from `/EntityRoot/OtherRoot/New Game Object` and publishes it so the UI can compute absolute X/Z;
-- publishes 30 Hz state through `Global\CamPosState_v3` / `Local\CamPosState_v3`.
+- publishes the scene X/Z of `/EntityRoot/OtherRoot/New Game Object` as the reference for the UI's ABS coordinates
+- publishes 30 Hz state through `Global\CamPosState_v4` / `Local\CamPosState_v4`.
 
 The player path uses these 7.2.0 native accessor entries:
 
@@ -27,15 +27,21 @@ The player path uses these 7.2.0 native accessor entries:
 
 The CN Unity table is uniformly `0x1000` below the global one. The FOV setter is `0x10000` below.
 
-The absolute coordinate formula is:
+The UI uses the same ABS formula for the camera and the player.
 
 ~~~text
-absolute X = relative X - anchor X
-absolute Z = relative Z - anchor Z
-absolute Y = relative Y
+ABS X = scene X - OriginX
+ABS Y = scene Y
+ABS Z = scene Z - OriginZ
 ~~~
 
-The anchor is the `New Game Object` child under `OtherRoot`. It changes with the world shift; a missing anchor marks absolute data invalid.
+Subtracting the reference position cancels any horizontal translation shared by the reference and the sampled object. The resulting X/Z match map coordinates if the reference has map X/Z `(0, 0)`. `AbsoluteValid` indicates that a recent reference sample is available.
+
+To check the player's ABS coordinates after a teleport, compare the stationary player's X/Z with `tranPos` for that scene and waypoint. The waypoint's `pos` field gives the position of the waypoint itself. At Windrise and Starfell Lake, the measured player X/Z matched `tranPos` to the two decimals shown by the UI.
+
+`tranPos.y` gives the configured arrival height. The tester described the character arriving above ground and descending with the Wind Glider to give slower devices time to load the terrain. Both screenshots record the player Transform's height after landing. [Measurements in the project README](../README.md#abs-坐标与传送落点)
+
+The v4 record is 116 bytes. An even publication sequence brackets a completed copy. Each frame includes the player and reference sample times and the reference generation. The viewer confirms an ABS sample when a later reference observation still belongs to that generation. Live scene coordinates update independently, and the UI shows the age difference between the live and ABS frames. The checked-in binary publishes the 104-byte v3 record. The viewer also accepts this format and uses the reference cache lifetime of 1500 ms for confirmation.
 
 The prebuilt `CamPosHook.dll` targets Genshin 7.2.0. A game update may change the prologue/offsets; the DLL checks the prologue and refuses to hook when it does not match.
 

@@ -71,6 +71,10 @@ public sealed record CameraFrame(
     public Vec3? CharacterPosition { get; init; }
     public Vec3? AbsolutePosition { get; init; }
     public Vec3? CharacterAbsolutePosition { get; init; }
+    /// <summary>Age of the confirmed ABS frame relative to the live scene frame.</summary>
+    public TimeSpan AbsoluteFrameDelay { get; init; }
+    public string AbsoluteTiming => AbsoluteFrameDelay > TimeSpan.Zero
+        ? $"ABS 延迟 {AbsoluteFrameDelay.TotalSeconds:0.00} s" : string.Empty;
     public bool HasFov => float.IsFinite(FovDegrees) && FovDegrees > 0.01f;
     public bool HasCharacterPosition => CharacterPosition is { } p && p.IsFinite;
     public bool HasAbsolutePosition => AbsolutePosition is { } p && p.IsFinite;
@@ -87,6 +91,7 @@ public sealed record CameraFrame(
 
 public readonly record struct CameraReadResult(bool Success, CameraFrame? Frame, string Error)
 {
+    public long SourceGeneration { get; init; }
     public static CameraReadResult Ok(CameraFrame frame) => new(true, frame, string.Empty);
     public static CameraReadResult Fail(string error) => new(false, null, error);
 }

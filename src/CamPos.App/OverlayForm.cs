@@ -59,6 +59,7 @@ internal sealed class OverlayForm : Form
 
     public void SetError(string error)
     {
+        _frame = null;
         _error = error;
         _stale = true;
         Invalidate();
@@ -126,7 +127,8 @@ internal sealed class OverlayForm : Form
 
         using var footerPen = new Pen(Color.FromArgb(47, 61, 78));
         g.DrawLine(footerPen, 16, h - 32, w - 16, h - 32);
-        TextRenderer.DrawText(g, "右键菜单 · 拖动移动", Ui.Small,
+        string footer = _frame?.AbsoluteTiming is { Length: > 0 } timing ? timing + "  ·  右键菜单" : "右键菜单 · 拖动移动";
+        TextRenderer.DrawText(g, footer, Ui.Small,
             new Rectangle(16, h - 25, w - 32, 20), Ui.Muted, TextFormatFlags.EndEllipsis);
     }
 
