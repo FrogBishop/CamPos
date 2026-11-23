@@ -7,13 +7,11 @@ CamPos 是一个 Windows x64 的《原神》进程内遥测工具。它通过注
 - 相机垂直 FOV；
 - **当前场上角色的脚底相对坐标和绝对坐标**。
 
-界面提供置顶悬浮窗和点击穿透，所有操作通过界面按钮或悬浮窗右键菜单完成，**不注册任何全局快捷键**。本版本只保留注入模式，外部 `OpenProcess` / `ReadProcessMemory` 模式已经删除。
+界面提供置顶悬浮窗和点击穿透。
 
 > **风险提示**
 >
 > 注入会修改游戏进程内的 `Camera.set_fieldOfView` 入口，并调用 Unity 的 Transform 访问器读取角色位置。这是明确违反游戏 ToS 的高风险行为，可能导致封号。请只在测试账号或你愿意承担损失的环境使用。
->
-> 本项目没有改名成 `genshin-fps-unlock` 或任何白名单工具，也不会提供冒充、白名单绕过或反作弊规避。工具名就是 CamPos。
 
 ![CamPos 主界面](docs/main.png)
 
@@ -41,7 +39,7 @@ CamPos 是一个 Windows x64 的《原神》进程内遥测工具。它通过注
 
 ## 配置文件（必须手动指定游戏目录）
 
-CamPos **不会**搜索注册表、启动器配置或默认安装路径，也不会猜测游戏目录。注入器只读取同目录的：
+CamPos **不会**搜索注册表、启动器配置或默认安装路径。注入器只读取同目录的：
 
 ~~~text
 CamPos.Injector.json
@@ -76,8 +74,8 @@ CamPos.Injector.json
 
 - JSON 字符串里的反斜杠要写成两个反斜杠，或者直接使用正斜杠，例如 D:/Games/Genshin Impact Game。
 - GameDirectory 只写到文件夹，不要写 GenshinImpact.exe。
-- 修改后保存为 UTF-8。注入器不会自动修复路径。
-- 配置文件缺失、目录不存在、找不到 exe、两个 exe 同时存在但没有指定 GameExecutable，注入器都会直接报错退出，不会退回隐式查找。
+- 修改后保存为 UTF-8。
+- 配置文件缺失、目录不存在、找不到 exe、两个 exe 同时存在但没有指定 GameExecutable，注入器都会直接报错退出。
 
 同目录的 CamPos.Injector.example.json 是模板；可以复制为 CamPos.Injector.json 后编辑。也可以用 --config 指定另一份配置（主要用于测试）。
 
@@ -94,8 +92,6 @@ CamPos.Injector.json
 5. 运行 CamPos.exe --injected，或者普通启动后点击 **注入模式**。
 6. 点击 **显示悬浮窗**，把窗口拖到合适位置。
 
-如果注入器提示“游戏已经在运行”，先彻底退出游戏。注入器必须在进程启动时加载 DLL；游戏跑起来后再注入会错过主相机初始化，也更容易被反作弊拦截。
-
 ### 命令行
 
 ~~~text
@@ -109,15 +105,13 @@ CamPos.Injector.exe [--config <json>] [--dll <dll>] [--args <args>]
 - --dll：使用另一个 hook DLL；默认是同目录的 CamPosHook.dll。
 - --args：覆盖 JSON 里的 Arguments。
 
-CamPos.exe 不再支持 --profile、--autodetect 或外部连接参数。
-
 ## 悬浮窗
 
 ![悬浮窗](docs/overlay.png)
 
 > 悬浮窗截图同样来自演示模式。
 
-左键拖动；右键菜单可以显示主窗口、切换点击穿透或隐藏。悬浮窗按自身实际尺寸绘制，不会在右侧/底部留下固定空白；同时显示相对坐标和 ABS 绝对坐标，次级文字已提高对比度。程序不注册任何全局快捷键，不会占用 `Ctrl+Alt+...` 等组合键，也不会干扰其他应用。
+左键拖动；右键菜单可以显示主窗口、切换点击穿透或隐藏。
 
 ## 数据来源
 
@@ -134,7 +128,7 @@ CamPosHook.dll 在游戏主线程恢复前 hook：
 40 53 48 83 EC 30 0F 29 74 24 20 0F 28 F1
 ~~~
 
-不匹配就拒绝 hook，不会盲目写入。匹配后用 14 字节绝对跳转覆盖入口，trampoline 保存原指令并跳回。
+不匹配就拒绝 hook。匹配后用 14 字节绝对跳转覆盖入口，trampoline 保存原指令并跳回。
 
 从 IL2CPP 的 Camera 对象：
 
@@ -203,7 +197,7 @@ uint AbsoluteValid;
 float OriginX, OriginZ;           // world shift 锚点；绝对 = 相对 - Origin
 ~~~
 
-CamPos.exe 只读这个共享内存，不直接接触游戏进程。
+CamPos.exe 只读这个共享内存。
 
 ## 构建
 
@@ -243,36 +237,6 @@ cl /LD /O2 CamPosHook.c /link /OUT:CamPosHook.dll
 
 本项目不使用任何第三方运行时 NuGet 包，也不依赖 MelonLoader、BepInEx 或 Il2CppInterop。
 
-## 已知限制
-
-- 仅支持 7.2.0 国际服/国服；游戏更新后 FOV 序言或 Unity 访问器 RVA 变化，hook 会拒绝或角色坐标失效。
-- 只支持 64 位 Windows 进程。
-- 注入模式需要管理员权限，且必须先退出游戏。
-- 角色坐标只在进入大世界后才可靠；登录界面、加载界面、角色选择界面可能显示场景占位角色或 —。
-- 角色坐标取的是脚底 Transform；游泳、下落、被击飞、坐骑/机关上可能不是视觉中心。
-- 绝对坐标依赖当前场景的 world shift 锚点；副本、加载界面或锚点缺失时 ABS 显示 —。
-- 绝对坐标是场景世界坐标，不是游戏地图 UI 的像素坐标。
-- 只支持当前场上角色，不提供队伍其他角色或敌人的坐标。
-- 不提供地图坐标转换、路径点、传送、ESP 或任何写入游戏状态的作弊功能。
-- 没有外部只读模式；官方客户端的 ReadProcessMemory 即使管理员也会被 HoYoProtect 拒绝，本版本已完全移除该路径。
-- 注入共享内存同一台机器同时只应运行一个实例。
-
-## 故障排查
-
-| 现象 | 处理 |
-|---|---|
-| 注入器提示找不到配置文件 | 确认 CamPos.Injector.json 和 CamPos.Injector.exe 在同一目录；或复制示例文件并改名 |
-| 注入器提示 GameDirectory 不存在 | 编辑 JSON，写原神安装文件夹；反斜杠要转义，或直接使用正斜杠 |
-| 注入器提示同时存在两个 exe | 增加 GameExecutable，值为 GenshinImpact.exe 或 YuanShen.exe |
-| 注入器提示游戏已经在运行 | 完全退出 GenshinImpact.exe / YuanShen.exe，包括后台进程 |
-| LoadLibraryW 返回 NULL / CreateRemoteThread 失败 | 确认管理员权限、DLL 路径存在、杀软未拦截；确认注入的是同目录的 CamPosHook.dll |
-| CamPos 显示“未找到共享内存” | 注入器没有成功加载 DLL；重看注入器控制台输出 |
-| CamPos 一直“等待相机数据” | 还没进入大世界，或登录/加载界面没有可用的 MainCamera；进入场景后再看 |
-| 相机有数据，角色坐标是 — | 当前场景没有 AvatarRoot 活跃角色，或 hook 的 Unity RVA 不匹配；确认是 7.2.0，并进入大世界 |
-| 数值不动 | 角色静止时坐标不变；转动视角应改变 Yaw/Pitch；FOV 只在相机 FOV 改变时变 |
-| 角色坐标和相机坐标差得很远 | 可能处于过场/自由镜头，或 world shift；以角色脚底和当前场景为准 |
-| 游戏更新后无数据 | 7.2.0 偏移过期；CamPosHook.dll 会检查序言并拒绝 hook，不会硬改未知函数 |
-
 ## 安全与合规
 
 注入模式会：
@@ -282,8 +246,6 @@ cl /LD /O2 CamPosHook.c /link /OUT:CamPosHook.dll
 - 在 Camera.set_fieldOfView 入口写入 inline hook；
 - 从游戏内调用 Unity 的 Transform 访问器；
 - 创建共享内存。
-
-这些行为可能被反作弊视为篡改，可能违反 ToS 并导致封号。**不要在主账号上使用。** 本项目不包含内核驱动、DMA、反作弊绕过、白名单伪装或自动更新偏移。
 
 ## 目录结构
 
