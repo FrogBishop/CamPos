@@ -16,6 +16,7 @@ internal sealed class MainForm : Form
     private DateTime _lastSuccessUtc = DateTime.MinValue;
     private bool _startedSource;
     private bool _closing;
+    private string? _lastConnectionMessage;
 
     private Label _pill = null!;
     private Label _processLabel = null!;
@@ -68,7 +69,7 @@ internal sealed class MainForm : Form
         {
             if (startInjected)
             {
-                AttachInjected(silent: true);
+                AttachInjected();
             }
             else if (startDemo || _config.ShowDemoOnStartup)
             {
@@ -122,7 +123,7 @@ internal sealed class MainForm : Form
         };
         top.Controls.Add(buttons);
 
-        var inject = Ui.Button("注入模式", (_, _) => AttachInjected(silent: false), true);
+        var inject = Ui.Button("注入模式", (_, _) => AttachInjected(), true);
         inject.Width = 112;
         inject.Margin = new Padding(8, 0, 0, 0);
         buttons.Controls.Add(inject);
@@ -379,7 +380,7 @@ internal sealed class MainForm : Form
         _processLabel.Size = new Size(390, 58);
         connect.Controls.Add(_processLabel);
 
-        var injectBtn = Ui.Button("注入模式", (_, _) => AttachInjected(silent: false), true);
+        var injectBtn = Ui.Button("注入模式", (_, _) => AttachInjected(), true);
         injectBtn.Location = new Point(14, 104);
         injectBtn.Width = 112;
         connect.Controls.Add(injectBtn);
@@ -482,33 +483,16 @@ internal sealed class MainForm : Form
         _throughButton.Text = "点击穿透：" + (_overlay.ClickThrough ? "开" : "关");
     }
 
-    private void AttachInjected(bool silent)
+    private void AttachInjected()
     {
-        try
-        {
-            _monitor.SetSource(null);
-            ResetSourceDisplay();
-            var source = new InjectedCameraSource();
-            _monitor.SetSource(source);
-            _processLabel.ForeColor = Ui.Muted;
-            _processLabel.Text = "共享内存\nCamPosHook.dll → CamPos.exe";
-            _sourceLabel.Text = "注入 · 相机与角色坐标";
-            _addressLabel.Text = "等待共享内存数据…";
-            _hintLabel.Text = "先用 CamPos.Injector.exe 启动游戏并进入大世界。";
-            SetStatus("注入", Ui.Accent);
-            ShowOverlayIfConfigured();
-            AppendLog("已连接 CamPos 注入共享内存。");
-        }
-        catch (Exception ex)
-        {
-            _sourceLabel.Text = "注入未连接";
-            _addressLabel.Text = ex.Message;
-            _processLabel.Text = "未连接共享内存。";
-            SetStatus("未连接", Ui.Muted);
-            AppendLog("注入连接失败: " + ex.Message);
-            if (!silent)
-                MessageBox.Show(this, ex.Message, "注入模式不可用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
+        ResetSourceDisplay();
+        _monitor.SetSource(new InjectedCameraSource());
+        _processLabel.Text = "正在查找共享内存…";
+        _sourceLabel.Text = "注入 · 相机与角色坐标";
+        _addressLabel.Text = "等待共享内存数据…";
+        _hintLabel.Text = "等待连接时每 0.5 秒重试。";
+        SetStatus("等待连接", Ui.Warn);
+        ShowOverlayIfConfigured();
     }
 
     private void StartDemo()
@@ -601,6 +585,24 @@ internal sealed class MainForm : Form
     {
         if (_closing || result.SourceGeneration != _monitor.SourceGeneration) return;
 
+        if (_monitor.Source is InjectedCameraSource shared)
+        {
+            var name = shared.MappingName;
+            var message = name is null ? result.Error : $"已连接 {name}。";
+            if (message != _lastConnectionMessage)
+            {
+                _lastConnectionMessage = message;
+                _processLabel.Text = message;
+                AppendLog(message);
+                if (name is null)
+                {
+                    _addressLabel.Text = message;
+                    ClearReadout(message);
+                }
+            }
+            if (name is null) return;
+        }
+
         if (result.Success && result.Frame is not null)
         {
             var f = result.Frame;
@@ -648,6 +650,7 @@ internal sealed class MainForm : Form
 
     private void ResetSourceDisplay()
     {
+        _lastConnectionMessage = null;
         _startedSource = false;
         _lastSuccessUtc = DateTime.MinValue;
         _ageLabel.Text = string.Empty;

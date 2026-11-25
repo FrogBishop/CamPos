@@ -21,6 +21,9 @@ $publishArgs = @(
     "-o", $Output
 )
 dotnet @publishArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "CamPos.exe publish failed (dotnet exit code $LASTEXITCODE)."
+}
 
 $injectorArgs = @(
     "publish", "src\CamPos.Injector\CamPos.Injector.csproj",

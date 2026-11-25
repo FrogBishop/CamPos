@@ -1,6 +1,18 @@
+using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using CamPos.Core.Camera;
 using CamPos.Core.Monitor;
+
+if (args is ["--publish-test-map", var mapName, var versionText])
+{
+    using var publisher = new TestMapping(uint.Parse(versionText), mapName);
+    var stop = Task.Run(() => Console.ReadLine());
+    do
+    {
+        publisher.Publish(Environment.TickCount64, Vec3.UnitX, Vec3.UnitZ, Vec3.Zero);
+    } while (!stop.Wait(33));
+    return;
+}
 
 var windriseOrigin = new Vec3(-1934.3658f, 0, 1266.3422f);
 var lakeOrigin = new Vec3(-2564.5361f, 0, 1329.8206f);
@@ -12,7 +24,74 @@ CheckLegacyTransitions();
 CheckInterruptedWritesAndWrap();
 CheckPausedPublisher();
 CheckSourceSwitch();
-Console.WriteLine("Passed timed and legacy coordinate checks.");
+CheckNamedConnection(4);
+CheckNamedConnection(3);
+CheckNamedHeaderRecovery();
+Console.WriteLine("Passed coordinate checks and cross-process v4/v3 connection checks.");
+
+void CheckNamedConnection(uint version)
+{
+    string baseName = "CamPosChecks_" + Guid.NewGuid().ToString("N");
+    string name = $@"Local\{baseName}_v{version}";
+    var source = new InjectedCameraSource(baseName);
+    using var monitor = new CameraMonitor();
+    var received = new TaskCompletionSource<CameraFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+    monitor.Updated += result =>
+    {
+        if (result.Frame is { } frame) received.TrySetResult(frame);
+    };
+    monitor.SetSource(source);
+    var missing = monitor.ReadOnce();
+    Expect(!missing.Success && missing.Error.Contains("未找到") && source.MappingName is null,
+        "missing mappings must be reported while the monitor keeps polling");
+
+    // A higher-priority mapping can still be initializing when a legacy publisher is ready.
+    using var incompleteV4 = version == 3 ? MemoryMappedFile.CreateNew($@"Local\{baseName}_v4", 116) : null;
+    var start = new ProcessStartInfo(Environment.ProcessPath!)
+    {
+        UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true
+    };
+    if (Path.GetFileNameWithoutExtension(start.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+        start.ArgumentList.Add(typeof(TestMapping).Assembly.Location);
+    start.ArgumentList.Add("--publish-test-map");
+    start.ArgumentList.Add(name);
+    start.ArgumentList.Add(version.ToString());
+    using var child = Process.Start(start)!;
+    try
+    {
+        var frame = received.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        Expect(source.MappingName == name && frame.Position == Vec3.UnitX && frame.CharacterPosition == Vec3.UnitZ,
+            $"the running reader must find the late v{version} publisher and read its frame");
+    }
+    finally
+    {
+        child.StandardInput.Close();
+        if (!child.WaitForExit(5000))
+        {
+            child.Kill();
+            throw new TimeoutException("Test publisher did not exit.");
+        }
+    }
+    Expect(child.ExitCode == 0, "test publisher exited successfully");
+}
+
+void CheckNamedHeaderRecovery()
+{
+    string baseName = "CamPosChecks_" + Guid.NewGuid().ToString("N");
+    string name = $@"Local\{baseName}_v4";
+    using var file = MemoryMappedFile.CreateNew(name, 116);
+    using var view = file.CreateViewAccessor();
+    using var source = new InjectedCameraSource(baseName);
+    Expect(source.Read(0).Error.Contains("等待写入协议头"), "zeroed mapping must report initialization");
+    view.Write(0, 0x43414D50u);
+    view.Write(4, 3u);
+    var mismatch = source.Read(500);
+    Expect(mismatch.Error.Contains(name) && mismatch.Error.Contains("版本 3") && source.MappingName is null,
+        "report the incompatible header and keep looking");
+    view.Write(4, 4u);
+    Expect(source.Read(1000).Error.Contains("等待有效的相机数据") && source.MappingName == name,
+        "report the connection separately from the first valid frame");
+}
 
 void CheckTimedTransitions()
 {
@@ -153,7 +232,7 @@ static void Expect(bool ok, string check)
     if (!ok) throw new InvalidOperationException(check);
 }
 
-// Writes the wire layout to a private anonymous mapping. No external process is involved.
+// Writes the wire layout to an anonymous mapping or a uniquely named test mapping.
 sealed class TestMapping : IDisposable
 {
     private readonly uint _version;
@@ -161,10 +240,10 @@ sealed class TestMapping : IDisposable
     private readonly InjectedCameraSource _reader;
     public uint Sequence { set => _writer.Write(12, value); }
 
-    public TestMapping(uint version)
+    public TestMapping(uint version, string? name = null)
     {
         _version = version;
-        var file = MemoryMappedFile.CreateNew(null, version == 4 ? 116 : 104);
+        var file = MemoryMappedFile.CreateNew(name, version == 4 ? 116 : 104);
         _writer = file.CreateViewAccessor();
         _reader = new InjectedCameraSource(file, version);
         _writer.Write(0, 0x43414D50u);

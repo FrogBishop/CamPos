@@ -41,7 +41,7 @@ To check the player's ABS coordinates after a teleport, compare the stationary p
 
 `tranPos.y` gives the configured arrival height. The tester described the character arriving above ground and descending with the Wind Glider to give slower devices time to load the terrain. Both screenshots record the player Transform's height after landing. [Measurements in the project README](../README.md#abs-坐标与传送落点)
 
-The v4 record is 116 bytes. An even publication sequence brackets a completed copy. Each frame includes the player and reference sample times and the reference generation. The viewer confirms an ABS sample when a later reference observation still belongs to that generation. Live scene coordinates update independently, and the UI shows the age difference between the live and ABS frames. The checked-in binary publishes the 104-byte v3 record. The viewer also accepts this format and uses the reference cache lifetime of 1500 ms for confirmation.
+The v4 record is 116 bytes. An even publication sequence brackets a completed copy. Each frame includes the player and reference sample times and the reference generation. The viewer confirms an ABS sample when a later reference observation still belongs to that generation. Live scene coordinates update independently, and the UI shows the age difference between the live and ABS frames. For the legacy 104-byte v3 record, the viewer uses the reference cache lifetime of 1500 ms for confirmation.
 
 The prebuilt `CamPosHook.dll` targets Genshin 7.2.0. A game update may change the prologue/offsets; the DLL checks the prologue and refuses to hook when it does not match.
 

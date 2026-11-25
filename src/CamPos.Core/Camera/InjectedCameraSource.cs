@@ -11,6 +11,7 @@ public sealed class InjectedCameraSource : ICameraSource
 {
     private const uint Magic = 0x43414D50;
     private const long SequenceOffset = 12;
+    private const int RetryIntervalMs = 500;
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private record struct State
@@ -39,40 +40,77 @@ public sealed class InjectedCameraSource : ICameraSource
         public uint PlayerTick, OriginTick, OriginGeneration;
     }
 
-    private readonly MemoryMappedFile _file;
-    private readonly MemoryMappedViewAccessor _view;
-    private readonly uint _version;
+    private readonly string _mapBaseName;
+    private MemoryMappedFile? _file;
+    private MemoryMappedViewAccessor? _view;
+    private uint _version;
+    private long _nextOpenAttempt;
+    private string _openError = string.Empty;
+    private bool _disposed;
     private readonly AbsolutePositionHistory _history = new();
     private State? _previous;
 
-    public InjectedCameraSource()
+    public string? MappingName { get; private set; }
+
+    public InjectedCameraSource() : this("CamPosState") { }
+
+    internal InjectedCameraSource(string mapBaseName) => _mapBaseName = mapBaseName;
+
+    private string OpenNamedMapping()
     {
-        Exception? last = null;
+        var errors = new List<string>();
         foreach (uint version in new uint[] { 4, 3 })
         foreach (var scope in new[] { "Global", "Local" })
         {
+            var name = $"{scope}\\{_mapBaseName}_v{version}";
             MemoryMappedFile? file = null;
+            MemoryMappedViewAccessor? view = null;
             try
             {
-                file = MemoryMappedFile.OpenExisting($"{scope}\\CamPosState_v{version}", MemoryMappedFileRights.Read);
-                _view = OpenView(file, version);
+                file = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
+                view = OpenView(file, version);
+                var magic = view.ReadUInt32(0);
+                var headerVersion = view.ReadUInt32(4);
+                if (magic != Magic || headerVersion != version)
+                {
+                    errors.Add(magic == 0 && headerVersion == 0
+                        ? $"{name} 已创建，等待写入协议头。"
+                        : $"{name} 协议头不匹配（标记 0x{magic:X8}，版本 {headerVersion}）。");
+                    continue;
+                }
                 _file = file;
+                _view = view;
                 _version = version;
-                return;
+                MappingName = name;
+                file = null;
+                view = null;
+                return string.Empty;
             }
-            catch (Exception ex)
+            catch (FileNotFoundException)
             {
+                // A publisher normally creates only one of the four names.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                errors.Add($"Windows 拒绝读取 {name}。");
+            }
+            catch (Exception ex) when (ex is IOException or ArgumentException)
+            {
+                errors.Add($"无法读取 {name}（{ex.Message}）。");
+            }
+            finally
+            {
+                view?.Dispose();
                 file?.Dispose();
-                last = ex;
             }
         }
 
-        throw new InvalidOperationException(
-            "未找到 CamPos 注入共享内存。请先运行 CamPos.Injector.exe 启动游戏并注入 CamPosHook.dll。",
-            last);
+        return errors.Count == 0
+            ? $"未找到 {_mapBaseName}_v4 或 {_mapBaseName}_v3（已检查 Global 和 Local）。"
+            : string.Join(" ", errors);
     }
 
-    internal InjectedCameraSource(MemoryMappedFile file, uint version)
+    internal InjectedCameraSource(MemoryMappedFile file, uint version) : this()
     {
         _view = OpenView(file, version);
         _file = file;
@@ -88,12 +126,26 @@ public sealed class InjectedCameraSource : ICameraSource
 
     internal CameraReadResult Read(long? observationTime)
     {
-        lock (_history) return ReadSnapshot(observationTime);
+        lock (_history)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_view is null)
+            {
+                long now = observationTime ?? Environment.TickCount64;
+                if (now >= _nextOpenAttempt)
+                {
+                    _openError = OpenNamedMapping();
+                    _nextOpenAttempt = now + RetryIntervalMs;
+                }
+                if (_view is null) return CameraReadResult.Fail(_openError);
+            }
+            return ReadSnapshot(_view, observationTime);
+        }
     }
 
-    private CameraReadResult ReadSnapshot(long? observationTime)
+    private CameraReadResult ReadSnapshot(MemoryMappedViewAccessor view, long? observationTime)
     {
-        if (!TryReadSnapshot(out var snapshot))
+        if (!TryReadSnapshot(view, out var snapshot))
             return _version == 4 ? CameraReadResult.Fail("共享帧正在更新。") : InvalidFrame("共享帧正在更新。");
         var s = snapshot.Data;
         if (s.Magic != Magic || s.Version != _version)
@@ -153,7 +205,7 @@ public sealed class InjectedCameraSource : ICameraSource
         return CameraReadResult.Ok(frame);
     }
 
-    private bool TryReadSnapshot(out TimedState snapshot)
+    private bool TryReadSnapshot(MemoryMappedViewAccessor view, out TimedState snapshot)
     {
         snapshot = default;
         for (int attempt = 0; attempt < 3; attempt++)
@@ -161,19 +213,19 @@ public sealed class InjectedCameraSource : ICameraSource
             if (_version == 3)
             {
                 // Legacy mappings have no publication sequence. Reject observable partial writes.
-                _view.Read(0, out State first);
+                view.Read(0, out State first);
                 Thread.MemoryBarrier();
-                _view.Read(0, out snapshot.Data);
+                view.Read(0, out snapshot.Data);
                 if (first == snapshot.Data) return true;
             }
             else
             {
-                uint sequence = _view.ReadUInt32(SequenceOffset);
+                uint sequence = view.ReadUInt32(SequenceOffset);
                 if ((sequence & 1) != 0) continue;
                 Thread.MemoryBarrier();
-                _view.Read(0, out snapshot);
+                view.Read(0, out snapshot);
                 Thread.MemoryBarrier();
-                if (sequence == snapshot.Data.Sequence && sequence == _view.ReadUInt32(SequenceOffset)) return true;
+                if (sequence == snapshot.Data.Sequence && sequence == view.ReadUInt32(SequenceOffset)) return true;
             }
         }
         return false;
@@ -190,8 +242,9 @@ public sealed class InjectedCameraSource : ICameraSource
     {
         lock (_history)
         {
-            _view.Dispose();
-            _file.Dispose();
+            _disposed = true;
+            _view?.Dispose();
+            _file?.Dispose();
         }
     }
 }
